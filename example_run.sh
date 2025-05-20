@@ -9,23 +9,33 @@ IMAGE_PRIVATE_KEY=${3:-${IMAGE_PRIVATE_KEY:-$(pwd)/private.key}}
 
 [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]] && subscription=" --build-arg ORG_ID=${ORG_ID} --build-arg ACTIVATION_KEY=${ACTIVATION_KEY} "
 
-sudo podman build -t coco-podvm \
-    ${subscription} \
-    -f Dockerfile .
+[[ -n "$ROOT_PASSWORD" ]] && run_extras+=" --env ROOT_PASSWORD=$ROOT_PASSWORD "
 
-[[ -n "$ROOT_PASSWORD" ]] && run_extras+=" -e ROOT_PASSWORD=$ROOT_PASSWORD "
-
-sudo podman run --rm \
-    --privileged \
-    -v $QCOW2:/disk.qcow2 \
+sudo podman run -it --rm \
+    --cap-add SYS_ADMIN --cap-add MKNOD --cap-add=SYS_RAWIO\
+    -v $QCOW2:/disk.qcow2:rw,Z \
     -v $IMAGE_CERTIFICATE_PEM:/public.pem \
     -v $IMAGE_PRIVATE_KEY:/private.key \
-    -v /lib/modules:/lib/modules \
-    --user 0 \
-    --security-opt=apparmor=unconfined \
+    -v /lib/modules:/lib/modules:ro,Z \
+    -v /sys:/sys:ro \
+    -v /run/udev/:/run/udev/ \
     --security-opt=seccomp=unconfined \
-    --mount type=bind,source=/dev,target=/dev \
-    --mount type=bind,source=/run/udev,target=/run/udev \
+    --device /dev/nbd6:rwm \
+    a2d44214457f82491d034bfd82e2cb80259874d9369bace1637ff35207 \
+    bash
+exit 1
+ 
+
+sudo podman build \
+    --cap-add SYS_ADMIN --cap-add MKNOD \
+    -v $QCOW2:/disk.qcow2:rw,Z \
+    -v $IMAGE_CERTIFICATE_PEM:/public.pem \
+    -v $IMAGE_PRIVATE_KEY:/private.key \
+    -v /lib/modules:/lib/modules:ro,Z \
+    --security-opt=seccomp=unconfined \
+    -v /dev/:/dev \
+    --device /dev/nbd0 \
+    ${subscription} \
     $run_extras \
-    localhost/coco-podvm
+    .
 

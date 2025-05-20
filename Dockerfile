@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi:latest as builder
 
 ARG ORG_ID
 ARG ACTIVATION_KEY
@@ -31,6 +31,8 @@ RUN dnf install -y guestfs-tools libguestfs-tools sbsigntools
 # scripts
 ADD scripts /scripts
 
+FROM builder
+
 # to make virt-customize work
 ENV LIBGUESTFS_BACKEND=direct
 
@@ -38,4 +40,4 @@ ENV LIBGUESTFS_BACKEND=direct
 ENV IMAGE_CERTIFICATE_PEM=/public.pem
 ENV IMAGE_PRIVATE_KEY=/private.key
 
-CMD ["/scripts/create-verity-podvm.sh", "/disk.qcow2"]
+RUN /scripts/create-verity-podvm.sh "/disk.qcow2"
