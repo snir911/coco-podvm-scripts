@@ -122,23 +122,23 @@ function resize_disk()
 function find_efi_root_part()
 {
     echo "Searching for root partition..."
-    EFI_PN=$(lsblk -o NAME,PARTTYPE -r $NBD_DEVICE | grep $EFI_PARTITION_UUID)
+    EFI_PN=$(partx -g -s $NBD_DEVICE --output NR,TYPE | grep $EFI_PARTITION_UUID)
     num_results=$(echo "$EFI_PN" | wc -l)
     if [[ "$num_results" -ne 1 || -z "$EFI_PN" ]]; then
         echo "Error: Expected one EFI System Partition, found $num_results."
         exit 1
     fi
-    EFI_PN=$(echo $EFI_PN | awk '{print  $1}')
-    echo EFI PARTITION=$EFI_PN
+    EFI_PN="${NBD_DEVICE##*/}p$(echo $EFI_PN | awk '{print  $1}')"
+    echo "EFI PARTITION=$EFI_PN"
 
-    ROOT_PN=$(lsblk -o NAME,PARTTYPE -r $NBD_DEVICE | grep $ROOT_PARTITION_UUID)
+    ROOT_PN=$(partx -g -s $NBD_DEVICE --output NR,TYPE | grep $ROOT_PARTITION_UUID)
     num_results=$(echo "$ROOT_PN" | wc -l)
     if [[ "$num_results" -ne 1 || -z "$ROOT_PN" ]]; then
         echo "Error: Expected one Root $ROOT_PARTITION_UUID, found $num_results."
         exit 1
     fi
-    ROOT_PN=$(echo $ROOT_PN | awk '{print  $1}')
-    echo ROOT PARTITION=$ROOT_PN
+    ROOT_PN="${NBD_DEVICE##*/}p$(echo $ROOT_PN | awk '{print  $1}')"
+    echo "ROOT PARTITION=$ROOT_PN"
 }
 
 function fix_bootx_cmdline()

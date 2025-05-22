@@ -31,7 +31,8 @@ RUN dnf install -y guestfs-tools libguestfs-tools sbsigntools
 # scripts
 ADD scripts /scripts
 
-FROM builder
+
+FROM builder as artifact
 
 # to make virt-customize work
 ENV LIBGUESTFS_BACKEND=direct
@@ -41,3 +42,13 @@ ENV IMAGE_CERTIFICATE_PEM=/public.pem
 ENV IMAGE_PRIVATE_KEY=/private.key
 
 RUN /scripts/create-verity-podvm.sh "/disk.qcow2"
+
+RUN sha256sum /disk.qcow2 > /disk.hash
+
+FROM scratch as wrapper
+
+ARG PODVM_IMAGE_SRC
+ENV PODVM_IMAGE_PATH="/image/podvm.qcow2"
+
+COPY --from=artifact /disk.hash /disk.hash
+COPY $PODVM_IMAGE_SRC $PODVM_IMAGE_PATH
