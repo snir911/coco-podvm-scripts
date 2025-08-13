@@ -1,13 +1,14 @@
 #! /bin/bash
 
-dnf config-manager --add-repo=https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
+dnf config-manager --add-repo=https://mirror.stream.centos.org/10-stream/AppStream/x86_64/os/ && dnf install -y --nogpgcheck afterburn e2fsprogs && dnf clean all && dnf config-manager --set-disabled "*centos*"
 cat <<EOF > /etc/systemd/system/afterburn-checkin.service
 [Unit]
 ConditionKernelCommandLine=
+ConditionVirtualization=microsoft
 
 [Service]
 ExecStart=
-ExecStart=-/usr/bin/afterburn --provider=azure --check-in
+ExecStart=/usr/bin/afterburn --provider=azure --check-in
 EOF
 ln -s ../afterburn-checkin.service /etc/systemd/system/multi-user.target.wants/afterburn-checkin.service
 
@@ -75,3 +76,22 @@ ExecStartPre=-/bin/mount -t iso9660 -o ro /dev/disk/by-label/cidata /media/cidat
 # The digest is a string in hex representation, we truncate it to a 32 bytes hex string
 ExecStartPost=-/bin/bash -c 'tpm2_pcrextend 8:sha256=\$(head -c64 /run/peerpod/initdata.digest)'
 EOF
+
+#nv
+export KERNEL_VERSION=$(rpm -q --qf "%{VERSION}" kernel-core)
+export KERNEL_RELEASE=$(rpm -q --qf "%{RELEASE}" kernel-core | sed 's/\.el.\(_.\)*$//')
+export ARCH=$(uname -m)
+dnf install -y gcc kernel-devel-${KERNEL_VERSION}-${KERNEL_RELEASE} kernel-devel-matched-${KERNEL_VERSION}-${KERNEL_RELEASE}
+dnf install -y 'dnf-command(config-manager)'
+subscription-manager repos --enable codeready-builder-for-rhel-10-$(arch)-rpms
+dnf install https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm -y
+dnf config-manager --add-repo=https://developer.download.nvidia.com/compute/cuda/repos/rhel10/x86_64/cuda-rhel10.repo
+dnf config-manager --best --nodocs --setopt install_weak_deps=False --save
+dnf install -y nvidia-driver-cuda-${DRIVER_VERSION} kmod-nvidia-open-dkms-${DRIVER_VERSION} --exclude=kernel\*
+export DRIVER_VERSION=${DRIVER_VERSION:-$(dkms status | grep -oP '\d+\.\d+\.\d+')}
+echo "DRIVER_VERSION: ${DRIVER_VERSION}, KERNEL_VERSION-KERNEL_RELEASE: ${KERNEL_VERSION}-${KERNEL_RELEASE}"
+sudo dkms build -m nvidia -v ${DRIVER_VERSION} -k ${KERNEL_VERSION}-${KERNEL_RELEASE}.${ARCH}
+sudo dkms install -m nvidia -v ${DRIVER_VERSION} -k ${KERNEL_VERSION}-${KERNEL_RELEASE}.${ARCH}
+dnf config-manager --add-repo=https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
+dnf install --nogpgcheck --repo cuda-rhel9-$(arch) -y nvidia-container-toolkit
+dnf clean all
