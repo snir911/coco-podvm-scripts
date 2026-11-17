@@ -27,11 +27,19 @@ spec:
     - name: KERNEL_VERSION
       type: string
       description: The kernel version that the stock kernel included with the RHEL image will be updated to
-      default: 6.12.0-211.16.1.el10_2
+      default: 6.12.0-211.75.1.3178_3059763351.el10_2
+    - name: KERNEL_REPO_URL
+      type: string
+      description: Base URL of the RPM repository that provides the pinned kernel packages (must match KERNEL_VERSION)
+      default: "https://artifacts.internal.cki-project.org/arr-cki-prod-internal-artifacts/internal-artifacts/3059764096/publish_x86_64/17970563974/artifacts/repo/6.12.0-211.75.1.3178_3059763351.el10_2.x86_64/"
     - name: NVIDIA_DRIVER_VERSION
       type: string
       description: The NVIDIA driver version to install
       default: 595.58.03
+    - name: NVIDIA_KMOD_KERNEL_VERSION
+      type: string
+      description: Kernel release the kmod-nvidia-open package was built for; must be kABI-compatible with KERNEL_VERSION
+      default: 6.12.0-211.16.1
     - default: redhat-api-secret
       description: Name of secret which contains the offline token for the Red Hat API
       name: REDHAT_OFFLINE_TOKEN_SECRET
@@ -55,8 +63,12 @@ spec:
         value: $(params.ACTIVATION_KEY)
       - name: KERNEL_VERSION
         value: $(params.KERNEL_VERSION)
+      - name: KERNEL_REPO_URL
+        value: $(params.KERNEL_REPO_URL)
       - name: NVIDIA_DRIVER_VERSION
         value: $(params.NVIDIA_DRIVER_VERSION)
+      - name: NVIDIA_KMOD_KERNEL_VERSION
+        value: $(params.NVIDIA_KMOD_KERNEL_VERSION)
       - name: BUILDAH_IMAGE
         value: 'registry.access.redhat.com/ubi9/buildah:9.5-1739778322'
       - name: SBOM_TYPE
@@ -234,7 +246,24 @@ spec:
         #!/bin/bash
         set -ex
 
-        dnf install -y kernel-{uki-virt,modules,modules-extra}-${KERNEL_VERSION}
+        # Install the pinned CVE-fixed kernel and its matching modules from the
+        # CKI build repository. These packages are not shipped in the RHEL repos,
+        # so the repo is added explicitly and every package is pinned to an exact
+        # version to keep kernel and modules in sync.
+        printf '[cki-kernel]\nname=CKI kernel\nbaseurl=%s\nenabled=1\ngpgcheck=0\n' \
+          "${KERNEL_REPO_URL}" > /etc/yum.repos.d/cki-kernel.repo
+
+        dnf install -y --nogpgcheck \
+          kernel-core-${KERNEL_VERSION}.x86_64 \
+          kernel-modules-core-${KERNEL_VERSION}.x86_64 \
+          kernel-modules-${KERNEL_VERSION}.x86_64 \
+          kernel-modules-extra-${KERNEL_VERSION}.x86_64 \
+          kernel-uki-virt-${KERNEL_VERSION}.x86_64
+
+        # The kernel is now installed; drop the internal repo so it does not
+        # remain configured in the final image.
+        rm -f /etc/yum.repos.d/cki-kernel.repo
+
         # Update shim fallback CSV to ensure Azure VM boots latest UKI (needed only when kernel is updated)
         printf "shimx64.efi,redhat,\\\\\\EFI\\\\\\Linux\\\\\\\"\$(cat /etc/machine-id)"-"\$(rpm -q --queryformat %{VERSION}-%{RELEASE}\\\\\\n kernel-uki-virt | tail -1)".x86_64.efi ,UKI bootentry\n" | iconv -f ASCII -t UCS-2 > /boot/efi/EFI/redhat/BOOTX64.CSV
 
@@ -248,12 +277,36 @@ spec:
         if [ -n "${NVIDIA_DRIVER_VERSION}" ]; then
           subscription-manager repos --enable=rhel-10-for-x86_64-supplementary-rpms
           subscription-manager repos --enable=rhel-10-for-x86_64-extensions-rpms
+
+          # Keep the NVIDIA driver version unchanged. The kmod package is built
+          # for NVIDIA_KMOD_KERNEL_VERSION (the original RHEL kernel), which is
+          # kABI-compatible with the pinned kernel above. Install it without
+          # dependency resolution and copy its modules into the pinned kernel's
+          # module tree.
+          dnf install -y dnf-plugins-core
+          KMOD_PKG="kmod-nvidia-open-${NVIDIA_DRIVER_VERSION}-${NVIDIA_KMOD_KERNEL_VERSION}"
+          KMOD_FOLDER=\$(mktemp -d)
+          dnf download --destdir "\${KMOD_FOLDER}" "\${KMOD_PKG}"
+          KMOD_RPM=\$(ls "\${KMOD_FOLDER}"/*.rpm | head -1)
+          rpm -ivh --nodeps "\${KMOD_RPM}"
+          KMOD_SRC=\$(rpm -qlp "\${KMOD_RPM}" | grep -E '\.ko(\.xz|\.gz|\.zst)?\$' | head -1 | xargs -r dirname)
+
           dnf install -y --setopt=install_weak_deps=False nvidia-driver-${NVIDIA_DRIVER_VERSION} \
               nvidia-driver-cuda-${NVIDIA_DRIVER_VERSION} \
               nvidia-driver-libs-${NVIDIA_DRIVER_VERSION} \
               nvidia-persistenced-${NVIDIA_DRIVER_VERSION} \
-              kmod-nvidia-open-${NVIDIA_DRIVER_VERSION}-${KERNEL_VERSION%.el*} \
               nvidia-container-toolkit
+
+          if [ -n "\${KMOD_SRC}" ] && [ "${NVIDIA_KMOD_KERNEL_VERSION}" != "${KERNEL_VERSION}" ]; then
+            KMOD_DST=/lib/modules/${KERNEL_VERSION}.x86_64/extra/drivers/video/nvidia
+            mkdir -p "\${KMOD_DST}"
+            cp -f "\${KMOD_SRC}"/*.ko* "\${KMOD_DST}"/
+            depmod -a "${KERNEL_VERSION}.x86_64"
+            restorecon -R /lib/modules/${KERNEL_VERSION}.x86_64 || true
+            # Drop the copy that was installed into the other kernel's tree.
+            rm -rf "\${KMOD_SRC%%/extra/*}"
+          fi
+          rm -rf "\${KMOD_FOLDER}"
           dnf clean all
 
           echo -e "blacklist nouveau\nblacklist nova_core" > /etc/modprobe.d/blacklist_nv_alt.conf
